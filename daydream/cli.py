@@ -7,6 +7,7 @@ import time
 from . import maps
 from .env import GridEnv, NAMES
 from .world import WorldModel
+from .learn import TabularModel, TransitionLog
 from .agent import run_agent
 from . import planners
 
@@ -29,16 +30,25 @@ def _planner_kwargs(args):
 
 def _load(args):
     env = GridEnv(maps.get(args.map))
-    model = WorldModel(env, fake_walls=args.fake_wall, fake_open=args.fake_open)
+    if getattr(args, "model", "hand") == "learned":
+        if not args.model_file:
+            raise SystemExit("--model learned needs --model-file PATH")
+        fallback = None if args.no_fallback else WorldModel(env)
+        model = TabularModel.load(args.model_file, fallback=fallback)
+    else:
+        model = WorldModel(env, fake_walls=args.fake_wall, fake_open=args.fake_open)
     return env, model
 
 
 def cmd_run(args):
     env, model = _load(args)
     planner = PLANNERS[args.planner]
+    log = TransitionLog() if args.record else None
     t0 = time.time()
     res = run_agent(env, model, planner, max_steps=args.max_steps, mpc=args.mpc,
                     replan=not args.no_replan, learn=not args.no_learn,
+                    on_step=(lambda s, a, t: log.record(s, a, t.next_state, t.reward, t.done)
+                             if log is not None else None),
                     **_planner_kwargs(args))
     dt = time.time() - t0
     state = env.start_state()
@@ -63,6 +73,9 @@ def cmd_run(args):
             print()
     print(res.summary())
     print("wall time %.2fs" % dt)
+    if log is not None:
+        log.save(args.record)
+        print("recorded %d transitions to %s" % (len(log), args.record))
     return 0 if res.succeeded else 1
 
 
@@ -71,6 +84,17 @@ def cmd_solve(args):
     plan = PLANNERS[args.planner](model, env.start_state(), **_planner_kwargs(args))
     print(plan.describe())
     return 0 if plan.actions else 1
+
+
+def cmd_learn(args):
+    model = TabularModel.load(args.log)
+    stats = model.stats()
+    print("transitions: %d" % stats["transitions"])
+    print("states:      %d" % stats["states"])
+    if args.out:
+        model.save(args.out)
+        print("wrote deduped model to %s" % args.out)
+    return 0
 
 
 def cmd_bench(args):
@@ -89,7 +113,13 @@ def cmd_bench(args):
             kw = {"max_nodes": args.max_nodes}
         for i in range(args.seeds):
             env = GridEnv(maps.get(args.map))
-            model = WorldModel(env)
+            if args.model == "learned":
+                if not args.model_file:
+                    raise SystemExit("--model learned needs --model-file PATH")
+                fallback = None if args.no_fallback else WorldModel(env)
+                model = TabularModel.load(args.model_file, fallback=fallback)
+            else:
+                model = WorldModel(env)
             res = run_agent(env, model, PLANNERS[name], max_steps=args.max_steps, **kw)
             wins += 1 if res.succeeded else 0
             steps += res.steps
@@ -135,6 +165,12 @@ def main(argv=None):
                        help="tile the model wrongly believes is a wall, e.g. 4,1")
         p.add_argument("--fake-open", type=_pos, action="append", default=[],
                        help="wall tile the model wrongly believes is open")
+        p.add_argument("--model", choices=["hand", "learned"], default="hand",
+                       help="which world model the planners see")
+        p.add_argument("--model-file", default=None,
+                       help="transition log to load for --model learned")
+        p.add_argument("--no-fallback", action="store_true",
+                       help="learned model with no fallback: unseen pairs are bumps")
 
     r = sub.add_parser("run", help="run the agent in the env")
     add_common(r)
@@ -142,6 +178,8 @@ def main(argv=None):
     r.add_argument("--mpc", action="store_true", help="replan every step")
     r.add_argument("--no-replan", action="store_true", help="never replan on surprise")
     r.add_argument("--no-learn", action="store_true", help="never fix wall beliefs")
+    r.add_argument("--record", default=None, metavar="PATH",
+                   help="append this run's transitions to a jsonl log")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("solve", help="plan only, print the action list")
@@ -161,6 +199,11 @@ def main(argv=None):
 
     m = sub.add_parser("maps", help="list bundled maps")
     m.set_defaults(func=cmd_maps)
+
+    l = sub.add_parser("learn", help="fit a tabular model from a transition log")
+    l.add_argument("--log", required=True, help="jsonl transition log to fit")
+    l.add_argument("--out", default=None, help="write the deduped model to PATH")
+    l.set_defaults(func=cmd_learn)
 
     args = ap.parse_args(argv)
     return args.func(args)
