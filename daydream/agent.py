@@ -25,7 +25,8 @@ class RunResult:
             self.replans, self.surprises, self.imagined)
 
 
-def run_agent(env, model, planner, max_steps=200, mpc=False, replan=True, learn=True, **planner_kw):
+def run_agent(env, model, planner, max_steps=200, mpc=False, replan=True, learn=True,
+              on_step=None, **planner_kw):
     # planner is a callable: planner(model, state, **planner_kw) -> Plan
     res = RunResult()
     state = env.start_state()
@@ -45,6 +46,8 @@ def run_agent(env, model, planner, max_steps=200, mpc=False, replan=True, learn=
         res.trace.append(("step", NAMES[action], predicted.next_state, actual.next_state,
                           predicted.reward, actual.reward))
         state = actual.next_state
+        if on_step is not None:
+            on_step(before, action, actual)
         if actual.done:
             res.outcome = actual.info.get("outcome")
             res.succeeded = res.outcome == "goal"
