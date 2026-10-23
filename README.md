@@ -61,4 +61,30 @@ planners only ever see the model, never the real env. that separation is
 the point. `WorldModel.observe()` patches wall beliefs from experience, so
 an agent with a wrong model can still converge by bumping into reality.
 
-tests: `python -m unittest discover -s tests` (38 tests, no network, no keys).
+learned models: instead of hand-writing the dynamics, record transitions
+and fit a table. sparse logs make the model wrong on its own, no fake
+walls needed.
+
+```bash
+python -m daydream run --map keys --record run.jsonl   # record the episode
+python -m daydream learn --log run.jsonl               # coverage stats
+python -m daydream run --map keys --model learned --model-file run.jsonl
+# unseen pairs fall back to the hand model; --no-fallback turns them into bumps
+```
+
+as a library:
+
+```python
+from daydream.learn import TabularModel, TransitionLog
+
+log = TransitionLog()
+# ... record real transitions: log.record(state, action, next_state, reward, done)
+model = TabularModel(fallback=WorldModel(env)).fit(log)
+result = run_agent(env, model, planners.bfs)
+```
+
+`TabularModel.observe()` records every real transition, so it plugs into
+the agent's learn path: run with a half-trained model and it patches its
+own table wherever reality disagrees.
+
+tests: `python -m unittest discover -s tests` (55 tests, no network, no keys).
